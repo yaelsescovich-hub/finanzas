@@ -440,7 +440,7 @@ async function boot(){
  shell();
 }
 function shell(){
- el('root').innerHTML='<header><div class="logo">4T<span>MS</span></div><div style="font-size:13px;color:#c7cbe0">Financiero · dirección · v4.13</div>'
+ el('root').innerHTML='<header><div class="logo">4T<span>MS</span></div><div style="font-size:13px;color:#c7cbe0">Financiero · dirección · v4.14</div>'
   +'<div class="who"><span>'+esc(meNombre())+'</span>'+(IS_ADMIN?'<button class="btn ghost sm" onclick="abrirRespaldo()">⬇ Respaldo</button> ':'')+'<button class="btn ghost sm" onclick="logout()">Salir</button></div></header>'
   +'<div class="tabs" id="tabs"></div><div class="main" id="app"></div>';
  renderTabs();render();
@@ -1514,6 +1514,26 @@ async function _emitirGo(hid){if(!IS_ADMIN)return;
  }catch(e){msg.style.color='#C0392B';msg.textContent='No se pudo: '+(e.message||e);}
 }
 async function marcarDocRecibido(hid){if(!IS_ADMIN)return;try{await sb.from('hitos_facturacion').update({doc_recibido:true}).eq('id',hid);renderPagos();}catch(e){alert(e.message||e);}}
+async function _oblPagarFin(oblId,hid,fecha){
+ var r=await sb.from('hito_obligaciones').update({pagado:true,pagado_fecha:fecha}).eq('id',oblId);
+ if(r.error)return r.error.message;
+ try{
+  var os=(await sb.from('hito_obligaciones').select('pagado').eq('hito_id',hid)).data||[];
+  if(os.length&&os.every(function(o){return o.pagado;}))
+   await sb.from('hitos_facturacion').update({consultor_pagado:true,consultor_pagado_fecha:fecha}).eq('id',hid);
+ }catch(e2){}
+ return null;
+}
+function _pagarPend(hid,obl){if(obl)marcarConsPagadoObl(obl,hid);else marcarConsultorPagado(hid);}
+async function marcarConsPagadoObl(oblId,hid){
+ if(!IS_ADMIN)return;
+ var f=prompt('Fecha del pago (AAAA-MM-DD):',today());
+ if(f===null)return;
+ f=(f||'').trim();if(!/^\d{4}-\d{2}-\d{2}$/.test(f))f=today();
+ var em=await _oblPagarFin(oblId,hid,f);
+ if(em){alert('No se pudo marcar: '+em);return;}
+ renderPagos();
+}
 async function marcarConsultorPagado(hid){if(!IS_ADMIN)return;
  try{
   var hh=(await sb.from('hitos_facturacion').select('*').eq('id',hid)).data||[];var x=hh[0]||{};
@@ -1539,7 +1559,14 @@ function pedirDoc(cons,monto,proy){
 async function _conciliarPagosCons(gas,hs){
  if(!IS_ADMIN)return 0;
  var num=function(v){return Number(v)||0;};
- var pend=hs.filter(function(x){return x.consultor&&!x.consultor_pagado&&num(x.monto_consultor)>0;});
+ var pend;var _porObl=false;
+ try{
+  var vd=(await sb.from('v_deuda_consultores').select('*')).data||[];
+  pend=vd.filter(function(o){return !o.pagado&&o.consultor;}).map(function(o){return {id:o.hito_id,_obl:o.obligacion_id,consultor:o.consultor,monto_consultor:Number(o.monto)||0,consultor_pagado:false};});
+  _porObl=true;
+ }catch(eV){
+  pend=hs.filter(function(x){return x.consultor&&!x.consultor_pagado&&num(x.monto_consultor)>0;});
+ }
  var pagos=gas.filter(function(g){return g.tipo==='Pago consultor'&&g.consultor;});
  var n=0;
  for(var i=0;i<pagos.length;i++){var g=pagos[i];
@@ -1547,8 +1574,9 @@ async function _conciliarPagosCons(gas,hs){
   var cands=pend.filter(function(x){return _norm(x.consultor)===gn&&Math.abs(num(x.monto_consultor)-num(g.monto))<=1000;});
   if(cands.length!==1)continue;
   var f=String(g.fecha_pago||g.fecha||'').slice(0,10)||today();
-  var r=await sb.from('hitos_facturacion').update({consultor_pagado:true,consultor_pagado_fecha:f}).eq('id',cands[0].id);
-  if(!r.error){cands[0].consultor_pagado=true;var pi=pend.indexOf(cands[0]);if(pi>=0)pend.splice(pi,1);n++;}
+  if(cands[0]._obl){var em=await _oblPagarFin(cands[0]._obl,cands[0].id,f);if(!em){cands[0].consultor_pagado=true;var pi0=pend.indexOf(cands[0]);if(pi0>=0)pend.splice(pi0,1);n++;}}
+  else{var r=await sb.from('hitos_facturacion').update({consultor_pagado:true,consultor_pagado_fecha:f}).eq('id',cands[0].id);
+  if(!r.error){cands[0].consultor_pagado=true;var pi=pend.indexOf(cands[0]);if(pi>=0)pend.splice(pi,1);n++;}}
  }
  return n;
 }
@@ -1557,9 +1585,16 @@ async function exportPlanillaPagosFin(){
  if(typeof XLSX==='undefined'){alert('No carg\u00f3 la librer\u00eda de Excel. Recarga.');return;}
  try{
   var hs=(await sb.from('hitos_facturacion').select('*')).data||[];
-  var pend=hs.filter(function(x){return x.consultor&&x.consultor!=='4TMS'&&!x.consultor_pagado&&(Number(x.monto_consultor)||0)>0;});
+  var pend;var _porObl=false;
+  try{
+   var vd8=(await sb.from('v_deuda_consultores').select('*')).data||[];
+   pend=vd8.filter(function(o){return !o.pagado&&o.consultor&&o.consultor!=='4TMS';}).map(function(o){return {id:'O'+o.obligacion_id,consultor:o.consultor,proyecto_id:o.proyecto_id,nombre:o.hito,monto_consultor:Number(o.monto)||0,doc_recibido:o.documento_subido,cliente_pago:o.cliente_pago};});
+   _porObl=true;
+  }catch(e8){
+   pend=hs.filter(function(x){return x.consultor&&x.consultor!=='4TMS'&&!x.consultor_pagado&&(Number(x.monto_consultor)||0)>0;});
+  }
   pend.sort(function(a,b){return String(a.consultor).localeCompare(String(b.consultor));});
-  var head=['ID hito (no tocar)','Consultor','Proyecto','Hito','Monto a transferir','Boleta recibida','Cliente pag\u00f3','PAGADO (escribe SI)','Fecha pago (AAAA-MM-DD, vac\u00edo = hoy)'];
+  var head=[(_porObl?'ID (no tocar)':'ID hito (no tocar)'),'Consultor','Proyecto','Hito','Monto a transferir','Boleta recibida','Cliente pag\u00f3','PAGADO (escribe SI)','Fecha pago (AAAA-MM-DD, vac\u00edo = hoy)'];
   var rows=pend.map(function(x){return [String(x.id),x.consultor,_proyNom(x.proyecto_id),fix(x.nombre||''),String(Number(x.monto_consultor)||0),(x.doc_recibido?'S\u00ed':'No'),(x.cliente_pago?'S\u00ed':'No'),'',''];});
   var ws=XLSX.utils.aoa_to_sheet([head].concat(rows));
   ws['!cols']=head.map(function(c){return {wch:Math.max(16,c.length+2)};});
@@ -1578,17 +1613,25 @@ function importarPlanillaPagosFin(){
    var wb=XLSX.read(data,{type:'array'});
    var aoa=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:false,defval:''});
    var low=function(v){return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim();};
-   if(!aoa.length||low(aoa[0][0]).indexOf('id hito')<0)throw new Error('No es la planilla de pagos (falta la columna "ID hito"). Exp\u00f3rtala desde esta misma pesta\u00f1a.');
+   if(!aoa.length||low(aoa[0][0]).indexOf('id')!==0)throw new Error('No es la planilla de pagos (falta la columna ID). Exp\u00f3rtala desde esta misma pesta\u00f1a.');
    var hs=(await sb.from('hitos_facturacion').select('id,consultor,nombre,monto_consultor,consultor_pagado')).data||[];
    var hm={};hs.forEach(function(x){hm[x.id]=x;});
+   var om={};try{((await sb.from('v_deuda_consultores').select('*')).data||[]).forEach(function(o){om['O'+o.obligacion_id]={obl:o.obligacion_id,hid:o.hito_id,consultor:o.consultor,nombre:o.hito,monto_consultor:Number(o.monto)||0,pagado:o.pagado};});}catch(e7){}
    var ok=[],warns=[];var siRe=/^(si|s\u00ed|s|x|yes|1|pagado|pagada)$/;
    for(var i=1;i<aoa.length;i++){var row=aoa[i]||[];
-    var idr=parseInt(String(row[0]||'').trim(),10);var pag=low(row[7]);
+    var idS=String(row[0]||'').trim();var pag=low(row[7]);
     if(!pag||!siRe.test(pag))continue;
-    if(!idr||!hm[idr]){warns.push('Fila '+(i+1)+': ID inv\u00e1lido, se ignora.');continue;}
-    if(hm[idr].consultor_pagado){warns.push('Fila '+(i+1)+' ('+hm[idr].consultor+'): ya estaba pagado, se ignora.');continue;}
     var fp=String(row[8]||'').trim();
     if(fp&&!/^\d{4}-\d{2}-\d{2}$/.test(fp)){warns.push('Fila '+(i+1)+': fecha "'+fp+'" inv\u00e1lida, se usar\u00e1 hoy.');fp='';}
+    if(/^O\d+$/i.test(idS)){
+     var ob=om[idS.toUpperCase()]||om[idS];
+     if(!ob){warns.push('Fila '+(i+1)+': ID de pago "'+idS+'" no existe, se ignora.');continue;}
+     if(ob.pagado){warns.push('Fila '+(i+1)+' ('+ob.consultor+'): ya estaba pagado, se ignora.');continue;}
+     ok.push({obl:ob.obl,hid:ob.hid,h:ob,fecha:fp||today()});continue;
+    }
+    var idr=parseInt(idS,10);
+    if(!idr||!hm[idr]){warns.push('Fila '+(i+1)+': ID inv\u00e1lido, se ignora.');continue;}
+    if(hm[idr].consultor_pagado){warns.push('Fila '+(i+1)+' ('+hm[idr].consultor+'): ya estaba pagado, se ignora.');continue;}
     ok.push({id:idr,h:hm[idr],fecha:fp||today()});
    }
    if(!ok.length){alert('Ninguna fila tiene SI en PAGADO.'+(warns.length?'\n\n'+warns.join('\n'):''));return;}
@@ -1597,6 +1640,7 @@ function importarPlanillaPagosFin(){
    if(!confirm('Se marcar\u00e1n '+ok.length+' pago(s):\n\n'+det+(warns.length?'\n\nAvisos:\n'+warns.slice(0,6).join('\n'):'')+'\n\n\u00bfConfirmar?'))return;
    var n=0,errs=[];
    for(var j=0;j<ok.length;j++){var x=ok[j];
+    if(x.obl){var em=await _oblPagarFin(x.obl,x.hid,x.fecha);if(em)errs.push(x.h.consultor+': '+em);else n++;continue;}
     var r=await sb.from('hitos_facturacion').update({consultor_pagado:true,consultor_pagado_fecha:x.fecha}).eq('id',x.id);
     if(r.error)errs.push(x.h.consultor+': '+r.error.message);else n++;
    }
@@ -1613,7 +1657,10 @@ async function renderPagos(){
   var _ncc=0;try{_ncc=await _conciliarPagosCons(gas,hs);if(_ncc){hs=(await sb.from('hitos_facturacion').select('*')).data||hs;}}catch(e9){}
   var num=function(x){return Number(x)||0;};
   var pagos=gas.filter(function(g){return g.tipo==='Pago consultor'&&g.consultor&&g.consultor!=='4TMS';});
-  var pend=hs.filter(function(x){return x.consultor&&x.consultor!=='4TMS'&&!x.consultor_pagado;});
+  var VD=null;try{VD=(await sb.from('v_deuda_consultores').select('*')).data||null;}catch(eVD){VD=null;}
+  var pend;
+  if(VD){pend=VD.filter(function(o){return !o.pagado&&o.consultor&&o.consultor!=='4TMS';}).map(function(o){return {id:o.hito_id,_obl:o.obligacion_id,proyecto_id:o.proyecto_id,consultor:o.consultor,monto_consultor:Number(o.monto)||0,doc_recibido:o.documento_subido,cliente_pago:o.cliente_pago,factura_emitida:o.factura_emitida,nombre:o.hito};});}
+  else{pend=hs.filter(function(x){return x.consultor&&x.consultor!=='4TMS'&&!x.consultor_pagado;});}
   window.__pagosCons=pagos;window.__pendCons=pend;
   // consolidar por consultor
   var C={};
@@ -1632,7 +1679,7 @@ async function renderPagos(){
    if(op){
     h+='<tr><td colspan=4 style="background:#f5f6fa;padding:8px 12px">';
     if(o.pagos.length){h+='<div style="font-weight:bold;font-size:12px;margin-bottom:4px">Pagos hechos</div><table style="width:100%;margin-bottom:8px"><tbody>';o.pagos.forEach(function(g){h+='<tr><td class="muted">'+esc(String(g.fecha||'').slice(0,10))+'</td><td class="r">'+M(num(g.monto))+'</td></tr>';});h+='</tbody></table>';}
-    if(o.pend.length){h+='<div style="font-weight:bold;font-size:12px;margin-bottom:4px">Por pagar (hitos)</div><table style="width:100%"><tbody>';o.pend.forEach(function(x){var _e=H_ESTADO(x);var est=_e.st==='lista_pago'?'listo para pagar':(_e.st==='cobrada_sin_doc'||_e.st==='emitida_sin_doc')?'falta su documento':(_e.st==='esperando_cliente'?'esperando pago cliente':'en curso');h+='<tr><td class="muted">'+esc(_proyNom(x.proyecto_id))+'</td><td class="r">'+M(num(x.monto_consultor))+'</td><td><span class="badge">'+est+'</span></td><td>'+(IS_ADMIN?((!x.doc_recibido?'<button class="btn ghost sm" onclick="pedirDoc(\''+esc(x.consultor).replace(/\x27/g,'')+'\','+num(x.monto_consultor)+',\''+esc(_proyCli(x.proyecto_id)).replace(/\x27/g,'')+'\')">Pedir doc</button> <button class="btn sm" onclick="subirDocConsultor('+x.id+')">Subir doc</button>':'')+((x.doc_recibido&&x.cliente_pago)?'<button class="btn sm" onclick="marcarConsultorPagado('+x.id+')">Marcar pagado</button>':'<button class="btn ghost sm" onclick="marcarConsultorPagado('+x.id+')" title="Faltan condiciones: pedir\u00e1 confirmaci\u00f3n">Marcar pagado\u2026</button>')):'')+'</td></tr>';});h+='</tbody></table>';}
+    if(o.pend.length){h+='<div style="font-weight:bold;font-size:12px;margin-bottom:4px">Por pagar (hitos)</div><table style="width:100%"><tbody>';o.pend.forEach(function(x){var _e=H_ESTADO(x);var est=_e.st==='lista_pago'?'listo para pagar':(_e.st==='cobrada_sin_doc'||_e.st==='emitida_sin_doc')?'falta su documento':(_e.st==='esperando_cliente'?'esperando pago cliente':'en curso');h+='<tr><td class="muted">'+esc(_proyNom(x.proyecto_id))+'</td><td class="r">'+M(num(x.monto_consultor))+'</td><td><span class="badge">'+est+'</span></td><td>'+(IS_ADMIN?((!x.doc_recibido?'<button class="btn ghost sm" onclick="pedirDoc(\''+esc(x.consultor).replace(/\x27/g,'')+'\','+num(x.monto_consultor)+',\''+esc(_proyCli(x.proyecto_id)).replace(/\x27/g,'')+'\')">Pedir doc</button> <button class="btn sm" onclick="subirDocConsultor('+x.id+')">Subir doc</button>':'')+((x.doc_recibido&&x.cliente_pago)?'<button class="btn sm" onclick="_pagarPend('+x.id+','+(x._obl||0)+')">Marcar pagado</button>':'<button class="btn ghost sm" onclick="_pagarPend('+x.id+','+(x._obl||0)+')" title="Faltan condiciones: pedir\u00e1 confirmaci\u00f3n">Marcar pagado\u2026</button>')):'')+'</td></tr>';});h+='</tbody></table>';}
     if(!o.pagos.length&&!o.pend.length)h+='<span class="muted">Sin detalle.</span>';
     h+='</td></tr>';
    }
