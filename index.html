@@ -440,7 +440,7 @@ async function boot(){
  shell();
 }
 function shell(){
- el('root').innerHTML='<header><div class="logo">4T<span>MS</span></div><div style="font-size:13px;color:#c7cbe0">Financiero · dirección · v4.14</div>'
+ el('root').innerHTML='<header><div class="logo">4T<span>MS</span></div><div style="font-size:13px;color:#c7cbe0">Financiero · dirección · v4.15</div>'
   +'<div class="who"><span>'+esc(meNombre())+'</span>'+(IS_ADMIN?'<button class="btn ghost sm" onclick="abrirRespaldo()">⬇ Respaldo</button> ':'')+'<button class="btn ghost sm" onclick="logout()">Salir</button></div></header>'
   +'<div class="tabs" id="tabs"></div><div class="main" id="app"></div>';
  renderTabs();render();
@@ -1429,10 +1429,12 @@ async function renderPorFacturar(){
  /* v4p7: cruce contra el Libro */
  var yaLibro=[];var _usados={};
  var _pcDe={};(PROY||[]).forEach(function(p){_pcDe[String(p.id)]=_normCli(p.cliente);});
+ var _cliMatch=function(a,b){if(!a||!b)return false;if(a===b)return true;return (a.length>=4&&(' '+b+' ').indexOf(' '+a+' ')>=0)||(b.length>=4&&(' '+a+' ').indexOf(' '+b+' ')>=0);};
  var pend=pend0.filter(function(h){
-  var cand=_docs.filter(function(d){if(d.estado==='anulado'||d.folio==null||_lf[String(d.folio)]||_usados[String(d.folio)])return false;
-   var calza=d.proyecto_id?String(d.proyecto_id)===String(h.proyecto_id||''):_normCli(d.cliente)===_pcDe[String(h.proyecto_id)];
-   return calza&&Math.abs(num(d.neto)-num(h.monto_cliente))<=1000;});
+  var cand=_docs.filter(function(d){if(String(d.estado||'').toLowerCase().indexOf('anulad')>=0||d.folio==null||_lf[String(d.folio)]||_usados[String(d.folio)])return false;
+   var calza=d.proyecto_id?String(d.proyecto_id)===String(h.proyecto_id||''):_cliMatch(_normCli(d.cliente),_pcDe[String(h.proyecto_id)]);
+   var mc=num(h.monto_cliente);
+   return calza&&(Math.abs(num(d.neto)-mc)<=1000||Math.abs(num(d.total)-mc)<=1000);});
   if(cand.length){_usados[String(cand[0].folio)]=1;yaLibro.push({h:h,d:cand[0]});return false;}
   return true;});var _dupC={};pend.forEach(function(x){var k=x.proyecto_id+'|'+(x.nombre||'')+'|'+(x.monto_cliente||0);_dupC[k]=(_dupC[k]||0)+1;});
  var _st={};var tot=pend.reduce(function(acc,h){var k=h.proyecto_id+'|'+(h.nombre||'')+'|'+(h.monto_cliente||0);if(_st[k])return acc;_st[k]=1;return acc+num(h.monto_cliente);},0);
@@ -1447,7 +1449,7 @@ async function renderPorFacturar(){
 
  if(yaLibro.length){
   h+='<div class="sec">Ya est\u00e1n en el Libro (confirmar v\u00ednculo)</div><div class="hint" style="margin-bottom:6px">Estos hitos figuran por facturar en Operaci\u00f3n, pero el Libro ya tiene una factura del mismo proyecto y monto. Confirma y el hito se sincroniza \u2014 sale de esta lista y de Operaci\u00f3n al tiro.</div><div class="card"><table><thead><tr><th>Cliente</th><th>Hito</th><th class="r">Monto</th><th>Factura en Libro</th><th>Estado</th><th></th></tr></thead><tbody>';
-  yaLibro.forEach(function(p){var pag=String(p.d.estado||'')==='pagado';
+  yaLibro.forEach(function(p){var pag=String(p.d.estado||'').toLowerCase().indexOf('pagad')>=0||(p.d.fecha_pago&&Number(p.d.monto_por_pagar||0)===0);
    h+='<tr><td><b>'+esc(_proyCli(p.h.proyecto_id))+'</b></td><td class="muted">'+esc(p.h.nombre||'')+'</td><td class="r">'+M(num(p.h.monto_cliente))+'</td><td><b>Folio '+esc(String(p.d.folio))+'</b> \u00b7 '+esc(String(p.d.emision||'').slice(0,10))+'</td><td>'+(pag?'<span class="badge" style="background:#6FA52C;color:#fff">Pagada</span>':'<span class="badge">Por cobrar</span>')+'</td><td>'+(IS_ADMIN?'<button class="btn g sm" onclick="confirmarYaFacturada('+p.h.id+',\''+esc(String(p.d.id))+'\')">Confirmar v\u00ednculo</button>':'')+'</td></tr>';});
   h+='</tbody></table></div>';
  } el('app').innerHTML=h;
