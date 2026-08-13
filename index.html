@@ -440,7 +440,7 @@ async function boot(){
  shell();
 }
 function shell(){
- el('root').innerHTML='<header><div class="logo">4T<span>MS</span></div><div style="font-size:13px;color:#c7cbe0">Financiero · dirección · v4.15</div>'
+ el('root').innerHTML='<header><div class="logo">4T<span>MS</span></div><div style="font-size:13px;color:#c7cbe0">Financiero · dirección · v4.16</div>'
   +'<div class="who"><span>'+esc(meNombre())+'</span>'+(IS_ADMIN?'<button class="btn ghost sm" onclick="abrirRespaldo()">⬇ Respaldo</button> ':'')+'<button class="btn ghost sm" onclick="logout()">Salir</button></div></header>'
   +'<div class="tabs" id="tabs"></div><div class="main" id="app"></div>';
  renderTabs();render();
@@ -790,6 +790,8 @@ async function anularPorNC(hid){if(!IS_ADMIN)return;
   render();}catch(e){alert('No se pudo: '+(e.message||e));}}
 
 /* ---------- RESULTADOS / MÁRGENES ---------- */
+window.RESOPEN=window.RESOPEN||{};
+function _resTgl(k){window.RESOPEN[String(k)]=!window.RESOPEN[String(k)];renderResultados();}
 async function renderResultados(){
  el('app').innerHTML='<div class="empty">Cargando resultados…</div>';
  try{
@@ -804,7 +806,11 @@ async function renderResultados(){
   if(!YR&&anios.length)YR=String(anios[anios.length-1]);
   var yd=docsV.filter(function(d){return !YR||String(d.anio)===String(YR);});
   var pagadas=yd.filter(function(d){return d.estado==='pagado'&&num(d.notas_credito)<num(d.total);}); // criterio validado: NC total anula el ingreso
-  var ingresoN=pagadas.reduce(function(s,d){return s+num(d.neto);},0); // revenue = neto cobrado
+  /* v4.16: la NC PARCIAL también resta (proporcional al neto). Antes una factura de 10M
+     con NC de 5M contaba 10M enteros y el margen del proyecto salía inflado. */
+  var dNeto=function(d){var nc=num(d.notas_credito);var t=num(d.total);var n=num(d.neto);
+   if(nc<=0||t<=0)return n;if(nc>=t)return 0;return Math.round(n*(1-nc/t));};
+  var ingresoN=pagadas.reduce(function(s,d){return s+dNeto(d);},0); // revenue = neto cobrado − NC
   var yg=gas.filter(function(g){return String(g.anio||String(g.fecha||'').slice(0,4))===String(YR)&&g.pagado;});
   var _ygOp=yg.filter(function(g){return !(g.tipo==='Pago consultor'&&g.consultor==='4TMS')&&!_esTrib(g);});
   var gastoTot=_ygOp.reduce(function(s,g){return s+num(g.monto);},0);
@@ -816,7 +822,8 @@ async function renderResultados(){
    +'<div class="kpi '+(ganancia<0?'r':'g')+'"><div class="l">Ganancia 4TMS</div><div class="v">'+M(ganancia)+'</div><div class="l">'+mg.toFixed(1)+'% margen</div></div>'
    +(ivaCaja>0?'<div class="kpi"><div class="l">IVA pagado al SII (caja, no resultado)</div><div class="v">'+M(ivaCaja)+'</div></div>':'')+'</div>';
   // Revenue por proyecto (los que asignaste en Ingresos)
-  var byp={};pagadas.forEach(function(d){if(d.proyecto_id){byp[d.proyecto_id]=(byp[d.proyecto_id]||0)+num(d.neto);}});
+  var byp={};var bypDocs={};pagadas.forEach(function(d){if(d.proyecto_id){byp[d.proyecto_id]=(byp[d.proyecto_id]||0)+dNeto(d);(bypDocs[d.proyecto_id]=bypDocs[d.proyecto_id]||[]).push(d);}});
+  window.__resDocs=bypDocs;window.__resDNeto=dNeto;
   // gasto directo por proyecto (sin recurrentes, sin 4TMS)
   var gByp={};_ygOp.filter(function(g){return !g.recurrente;}).forEach(function(g){var r=g.reparto?(typeof g.reparto==='string'?JSON.parse(g.reparto):g.reparto):null;if(r&&r.items&&r.items.length){r.items.forEach(function(it){var amt=(r.modo==='%')?num(g.monto)*num(it.valor)/100:num(it.valor);gByp[it.proyecto_id]=(gByp[it.proyecto_id]||0)+amt;});}else if(g.proyecto_id){gByp[g.proyecto_id]=(gByp[g.proyecto_id]||0)+num(g.monto);}});
   var recTot=yg.filter(function(g){return g.recurrente;}).reduce(function(s,g){return s+num(g.monto);},0);
@@ -826,7 +833,15 @@ async function renderResultados(){
   if(!keys.length)h+='<div class="empty">Aún no asignas proyecto a los ingresos. Hazlo en Ingresos (columna Proyecto).</div>';
   else{h+='<table><thead><tr><th>Proyecto</th><th class="r">Ingreso</th><th class="r">Gasto directo</th><th class="r">Overhead</th><th class="r">Utilidad</th><th class="r">%</th></tr></thead><tbody>';
    var _sumIng=0,_sumG=0,_sumOvh=0;
-   keys.map(function(k){var rec=_ovh(recTot,byp[k],ingresoN);return {k:k,ing:byp[k],g:gByp[k]||0,rec:rec};}).sort(function(a,b){return (b.ing-b.g-b.rec)-(a.ing-a.g-a.rec);}).forEach(function(x){var u=x.ing-x.g-x.rec;_sumIng+=x.ing;_sumG+=x.g;_sumOvh+=x.rec;h+='<tr><td><b>'+esc2((proMap[x.k]&&(fix(proMap[x.k].cliente)+' · '+fix(proMap[x.k].cargo)))||('#'+x.k))+'</b></td><td class="r">'+M(x.ing)+'</td><td class="r">'+M(x.g)+'</td><td class="r muted">'+M(Math.round(x.rec))+'</td><td class="r'+(u<0?' neg':'')+'"><b>'+M(u)+'</b></td><td class="r">'+(x.ing?(u/x.ing*100).toFixed(0):'0')+'%</td></tr>';});
+   keys.map(function(k){var rec=_ovh(recTot,byp[k],ingresoN);return {k:k,ing:byp[k],g:gByp[k]||0,rec:rec};}).sort(function(a,b){return (b.ing-b.g-b.rec)-(a.ing-a.g-a.rec);}).forEach(function(x){var u=x.ing-x.g-x.rec;_sumIng+=x.ing;_sumG+=x.g;_sumOvh+=x.rec;h+='<tr style="cursor:pointer" onclick="_resTgl(\''+x.k+'\')" title="Clic: ver las facturas que componen este ingreso"><td><b>'+esc2((proMap[x.k]&&(fix(proMap[x.k].cliente)+' · '+fix(proMap[x.k].cargo)))||('#'+x.k))+'</b> <span class="muted" style="font-size:11px">\u25be</span></td><td class="r">'+M(x.ing)+'</td><td class="r">'+M(x.g)+'</td><td class="r muted">'+M(Math.round(x.rec))+'</td><td class="r'+(u<0?' neg':'')+'"><b>'+M(u)+'</b></td><td class="r">'+(x.ing?(u/x.ing*100).toFixed(0):'0')+'%</td></tr>';
+    if(window.RESOPEN&&window.RESOPEN[String(x.k)]){
+     var _dd9=(window.__resDocs&&window.__resDocs[x.k])||[];var _dn9=window.__resDNeto||function(d){return Number(d.neto)||0;};
+     var _det='<div style="padding:6px 4px"><b style="color:var(--navy)">Auditor\u00eda del ingreso \u00b7 '+_dd9.length+' factura'+(_dd9.length===1?'':'s')+'</b>';
+     _dd9.forEach(function(d9){var nc9=Number(d9.notas_credito)||0;
+      _det+='<div style="font-size:12.5px;margin-top:3px">Folio <b>'+esc(String(d9.folio))+'</b> \u00b7 '+esc(String(d9.emision||'').slice(0,10))+' \u00b7 neto '+M(Number(d9.neto)||0)+(nc9>0?' \u2212 NC '+M(nc9)+' \u2192 cuenta <b>'+M(_dn9(d9))+'</b>':' \u2192 cuenta <b>'+M(_dn9(d9))+'</b>')+'</div>';});
+     _det+='<div class="hint" style="margin-top:5px">\u00bfSobra una factura aqu\u00ed (duplicada o de otro proyecto)? Ve a Ingresos y corr\u00edgele el proyecto o an\u00falala en Duemint \u2014 este n\u00famero se recalcula solo.</div></div>';
+     h+='<tr><td colspan="6" style="background:#f7f8fb">'+_det+'</td></tr>';
+    }});
    var _ingNo=ingresoN-_sumIng;var _gNo=gastoTot-_sumG-recTot;var _ovhNo=recTot-_sumOvh;var _uNo=_ingNo-_gNo-_ovhNo;
    if(_ingNo>0.5||_gNo>0.5||_ovhNo>0.5)h+='<tr><td class="muted">Sin proyecto asignado</td><td class="r muted">'+M(_ingNo)+'</td><td class="r muted">'+M(_gNo)+'</td><td class="r muted">'+M(Math.round(_ovhNo))+'</td><td class="r muted">'+M(Math.round(_uNo))+'</td><td class="r muted">—</td></tr>';
    h+='<tr style="border-top:2px solid var(--navy)"><td><b>Total (= ganancia del año)</b></td><td class="r"><b>'+M(ingresoN)+'</b></td><td class="r"><b>'+M(gastoTot-recTot)+'</b></td><td class="r"><b>'+M(recTot)+'</b></td><td class="r'+(ganancia<0?' neg':'')+'"><b>'+M(ganancia)+'</b></td><td class="r"><b>'+mg.toFixed(0)+'%</b></td></tr>';
